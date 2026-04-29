@@ -1,6 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Multi-AZ Highly Available VPC with Public and Private Subnets
 
+# AMI for Amazon linux
+Parameters:
+  LatestAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
 Resources:
     VPC:
         Type: AWS::EC2::VPC
@@ -208,11 +214,6 @@ Resources:
               FromPort: -1
               ToPort: -1
               CidrIp: 10.0.0.0/16
-
-    # AMI for Amazon linux 2023
-    LatestAMI:
-        Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-        Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
 
     # EC2 Instances in Public Subnets
     PublicInstance1:

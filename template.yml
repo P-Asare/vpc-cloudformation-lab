@@ -1,0 +1,282 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Multi-AZ Highly Available VPC with Public and Private Subnets
+
+Resources:
+    VPC:
+        Type: AWS::EC2::VPC
+        Properties:
+          CidrBlock: 10.0.0.0/16
+          EnableDnsSupport: true
+          EnableDnsHostnames: true
+          Tags:
+            - Key: Name
+              Value: MultiAZ-VPC
+
+    # Internet Gateway and Attachment
+    InternetGateway:
+        Type: AWS::EC2::InternetGateway
+
+    AttachIGW:
+        Type: AWS::EC2::VPCGatewayAttachment
+        Properties:
+          VpcId: !Ref VPC
+          InternetGatewayId: !Ref InternetGateway
+
+    # Public Subnets
+    PublicSubnetAZ1:
+        Type: AWS::EC2::Subnet
+        Properties:
+          VpcId: !Ref VPC
+          CidrBlock: 10.0.1.0/24
+          AvailabilityZone: us-east-1a
+          MapPublicIpOnLaunch: true
+          Tags:
+            - Key: Name
+              Value: PublicSubnetAZ1
+
+    PublicSubnetAZ2:
+        Type: AWS::EC2::Subnet
+        Properties:
+          VpcId: !Ref VPC
+          CidrBlock: 10.0.2.0/24
+          AvailabilityZone: us-east-1b
+          MapPublicIpOnLaunch: true
+          Tags:
+            - Key: Name
+              Value: PublicSubnetAZ2
+
+    # Private Subnets
+    PrivateSubnetAZ1:
+        Type: AWS::EC2::Subnet
+        Properties:
+          VpcId: !Ref VPC
+          CidrBlock: 10.0.3.0/24
+          AvailabilityZone: !Select [0, !GetAZs ""]
+          MapPublicIpOnLaunch: false
+          Tags:
+            - Key: Name
+              Value: PrivateSubnetAZ1
+
+    PrivateSubnetAZ2:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref VPC
+        CidrBlock: 10.0.4.0/24
+        AvailabilityZone: !Select [1, !GetAZs ""]
+        MapPublicIpOnLaunch: false
+        Tags:
+          - Key: Name
+            Value: PrivateSubnetAZ2
+
+    # Route Table for Public Subnets
+    PublicRouteTable:
+        Type: AWS::EC2::RouteTable
+        Properties:
+          VpcId: !Ref VPC
+
+    PublicRoute:
+        Type: AWS::EC2::Route
+        DependsOn: AttachIGW
+        Properties:
+          RouteTableId: !Ref PublicRouteTable
+          DestinationCidrBlock: 0.0.0.0/0
+          GatewayId: !Ref InternetGateway
+
+    PublicSubnetAZ1Route:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+          SubnetId: !Ref PublicSubnetAZ1
+          RouteTableId: !Ref PublicRouteTable
+
+    PublicSubnetAZ2Route:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+          SubnetId: !Ref PublicSubnetAZ2
+          RouteTableId: !Ref PublicRouteTable
+
+    # Elastic IPS for NAT Gateways
+    NatEIP1:
+        Type: AWS::EC2::EIP
+        DependsOn: AttachIGW
+        Properties:
+          Domain: vpc
+
+    NatEIP2:
+        Type: AWS::EC2::EIP
+        DependsOn: AttachIGW
+        Properties:
+          Domain: vpc
+
+    # NAT Gateways
+    NatGatewayAZ1:
+        Type: AWS::EC2::NatGateway
+        DependsOn: AttachIGW
+        Properties:
+          AllocationId: !GetAtt NatEIP1.AllocationId
+          SubnetId: !Ref PublicSubnetAZ1
+
+    NatGatewayAZ2:
+        Type: AWS::EC2::NatGateway
+        DependsOn: AttachIGW
+        Properties:
+          AllocationId: !GetAtt NatEIP2.AllocationId
+          SubnetId: !Ref PublicSubnetAZ2
+
+    # Route Table for Private Subnets
+    PrivateRouteTableAZ1:
+        Type: AWS::EC2::RouteTable
+        Properties:
+          VpcId: !Ref VPC
+
+    PrivateRouteAZ1:
+        Type: AWS::EC2::Route
+        DependsOn: NatGatewayAZ1
+        Properties:
+          RouteTableId: !Ref PrivateRouteTableAZ1
+          DestinationCidrBlock: 0.0.0.0/0
+          NatGatewayId: !Ref NatGatewayAZ1
+
+    PrivateSubnetAZ1Route:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+          SubnetId: !Ref PrivateSubnetAZ1
+          RouteTableId: !Ref PrivateRouteTableAZ1
+
+    PrivateRouteTableAZ2:
+        Type: AWS::EC2::RouteTable
+        Properties:
+          VpcId: !Ref VPC
+
+    PrivateRouteAZ2:
+        Type: AWS::EC2::Route
+        DependsOn: NatGatewayAZ2
+        Properties:
+          RouteTableId: !Ref PrivateRouteTableAZ2
+          DestinationCidrBlock: 0.0.0.0/0
+          NatGatewayId: !Ref NatGatewayAZ2
+
+    PrivateSubnetAZ2Route:
+        Type: AWS::EC2::SubnetRouteTableAssociation
+        Properties:
+          SubnetId: !Ref PrivateSubnetAZ2
+          RouteTableId: !Ref PrivateRouteTableAZ2
+
+    # IAM roole for session manager
+    EC2SSMRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: !Sub "${AWS::StackName}-EC2-SSM-Role"
+          AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Principal:
+                  Service: ec2.amazonaws.com
+                Action: sts:AssumeRole
+          ManagedPolicyArns:
+            - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+    InstanceProfile:
+        Type: AWS::IAM::InstanceProfile
+        Properties:
+          Roles:
+            - !Ref EC2SSMRole
+
+    # Security Groups for instances
+    PublicSG:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+          GroupDescription: Allow ICMP and HTTP access
+          VpcId: !Ref VPC
+          SecurityGroupIngress:
+            - IpProtocol: tcp
+              FromPort: 80
+              ToPort: 80
+              CidrIp: 0.0.0.0/0
+            - IpProtocol: icmp
+              FromPort: -1
+              ToPort: -1
+              CidrIp: 0.0.0.0/0
+
+    PrivateSG:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+          GroupDescription: Allow ICMP within VPC
+          VpcId: !Ref VPC
+          SecurityGroupIngress:
+            - IpProtocol: icmp
+              FromPort: -1
+              ToPort: -1
+              CidrIp: 10.0.0.0/16
+
+    # AMI for Amazon linux 2023
+    LatestAMI:
+        Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+        Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+    # EC2 Instances in Public Subnets
+    PublicInstance1:
+        Type: AWS::EC2::Instance
+        Properties:
+          ImageId: !Ref LatestAMI
+          InstanceType: t2.micro
+          SubnetId: !Ref PublicSubnetAZ1
+          SecurityGroupIds:
+            - !Ref PublicSG
+          IamInstanceProfile: !Ref InstanceProfile
+          UserData:
+            Fn::Base64: |
+              #!/bin/bash
+              yum update -y
+              yum install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              echo "<h1>Palal Asare - Multi-AZ lab</h1>" > /var/www/html/index.html
+
+    PublicInstance2:
+        Type: AWS::EC2::Instance
+        Properties:
+          ImageId: !Ref LatestAMI
+          InstanceType: t2.micro
+          SubnetId: !Ref PublicSubnetAZ2
+          SecurityGroupIds:
+            - !Ref PublicSG
+          IamInstanceProfile: !Ref InstanceProfile
+          UserData:
+            Fn::Base64: |
+              #!/bin/bash
+              yum update -y
+              yum install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              echo "<h1>Palal Asare - Multi-AZ lab</h1>" > /var/www/html/index.html
+
+    # EC2 Instances in Private Subnets
+    PrivateInstance1:
+        Type: AWS::EC2::Instance
+        Properties:
+          ImageId: !Ref LatestAMI
+          InstanceType: t2.micro
+          SubnetId: !Ref PrivateSubnetAZ1
+          SecurityGroupIds:
+            - !Ref PrivateSG
+          IamInstanceProfile: !Ref InstanceProfile
+
+    PrivateInstance2:
+        Type: AWS::EC2::Instance
+        Properties:
+          ImageId: !Ref LatestAMI
+          InstanceType: t2.micro
+          SubnetId: !Ref PrivateSubnetAZ2
+          SecurityGroupIds:
+            - !Ref PrivateSG
+          IamInstanceProfile: !Ref InstanceProfile
+
+# Outputs
+Outputs:
+  PublicIP1:
+    Description: Public IP of instance in Public Subnet AZ1
+    Value: !GetAtt PublicInstance1.PublicIp
+  PublicIP2:
+    Description: Public IP of instance in Public Subnet AZ2
+    Value: !GetAtt PublicInstance2.PublicIp
